@@ -598,8 +598,11 @@ class ModifiableObject(NonConstantObject):
         Assigning integers less than 32-bits is faster
         """
         if isinstance(value, get_python_integer_types()) and value <= 0x7fffffff and value >= -0x80000000:
-            simulator.set_signal_val_long(self._handle, value)
-            return
+            # 32-bit Aldec's gpi_set_signal_value_long does weird things when
+            # the signal is wider than 32 bits.
+            if len(self) <= 32:
+                simulator.set_signal_val_long(self._handle, value)
+                return
 
         if isinstance(value, ctypes.Structure):
             value = BinaryValue(value=cocotb.utils.pack(value), bits=len(self))

@@ -597,7 +597,7 @@ class ModifiableObject(NonConstantObject):
 
         Assigning integers less than 32-bits is faster
         """
-        if isinstance(value, get_python_integer_types()) and value < 0x7fffffff:
+        if isinstance(value, get_python_integer_types()) and value <= 0x7fffffff and value >= -0x80000000:
             simulator.set_signal_val_long(self._handle, value)
             return
 

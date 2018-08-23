@@ -413,33 +413,11 @@ class Scheduler(object):
             if _debug:
                 self.log.debug("Scheduled coroutine %s" % (coro.__name__))
 
-        # Schedule may have queued up some events so we'll burn through those.
-        # We need to alternate between events and triggers, because the
-        # recursive react call can also queue events again. We only do this for
-        # toplevel calls from the simulator because we can get stack overflows
-        # otherwise (for instance, if many coroutines terminate without
-        # yielding to the simulator. test_time_in_external does this, for
-        # instance)
-        if not depth and isinstance(trigger, GPITrigger):
-            while self._pending_events or self._pending_triggers:
-                while self._pending_events:
-                    if _debug:
-                        self.log.debug("Scheduling pending event %s" %
-                                    (str(self._pending_events[0])))
-                    self._pending_events.pop(0).set()
-
-                while self._pending_triggers:
-                    if _debug:
-                        self.log.debug("Scheduling pending trigger %s" %
-                                    (str(self._pending_triggers[0])))
-                    self.react(self._pending_triggers.pop(0), depth=depth + 1)
-
-                if self._pending_events:
-                    self.log.debug("Recursive react call queued up new events")
-
         # We only advance for GPI triggers
         if not depth and isinstance(trigger, GPITrigger):
-            self.advance()
+
+            # Handle all pending events and triggers.
+            self.handle_pending_and_advance()
 
             if _debug:
                 self.log.debug("All coroutines scheduled, handing control back"
@@ -448,6 +426,38 @@ class Scheduler(object):
             if _profiling:
                 _profile.disable()
         return
+
+    def handle_pending_and_advance(self):
+        """Handles pending events and triggers queued up by schedule() that
+        could not be handled immediately without building up the call stack for
+        every trigger/event, then advance the simulation. This must be called
+        before control is handed back to the simulator; i.e. at the end of
+        react() and at the end of the cocotb entry point.
+        """
+
+        # We need to alternate between handling events and triggers:
+        # Event.set() may pend a trigger. The react call will call schedule
+        # again, which may pend new events. These events cannot be handled in
+        # the recursed react call, because this can lead to a stack overflow
+        # in certain cases. By doing them in a loop just before passing control
+        # to the simulator, we ensure that the stack never grows.
+        while self._pending_events or self._pending_triggers:
+            while self._pending_events:
+                if _debug:
+                    self.log.debug("Scheduling pending event %s" %
+                                (str(self._pending_events[0])))
+                self._pending_events.pop(0).set()
+
+            while self._pending_triggers:
+                if _debug:
+                    self.log.debug("Scheduling pending trigger %s" %
+                                (str(self._pending_triggers[0])))
+                self.react(self._pending_triggers.pop(0), 1)
+
+            if self._pending_events:
+                self.log.debug("Recursive react call queued up new events")
+
+        self.advance()
 
     def unschedule(self, coro):
         """Unschedule a coroutine.  Unprime any pending triggers"""
@@ -577,6 +587,7 @@ class Scheduler(object):
 
         self.schedule(coroutine)
         self.advance()
+
         return coroutine
 
     def new_test(self, coroutine):

@@ -156,6 +156,11 @@ class VhpiReadwriteCbHdl : public VhpiCbHdl {
 public:
     VhpiReadwriteCbHdl(GpiImplInterface *impl);
     virtual ~VhpiReadwriteCbHdl() { }
+    virtual int arm_callback(void);
+    virtual int cleanup_callback();
+protected:
+    vhpiCbDataT last_known_delta_cb_data;
+    vhpiHandleT last_known_delta_hdl;
 };
 
 class VhpiArrayObjHdl : public GpiObjHdl {

@@ -470,7 +470,7 @@ int VhpiLogicSignalObjHdl::set_signal_value(long value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -515,7 +515,7 @@ int VhpiLogicSignalObjHdl::set_signal_value(std::string &value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -562,7 +562,7 @@ int VhpiSignalObjHdl::set_signal_value(long value)
             return -1;
         }
     }
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -587,7 +587,7 @@ int VhpiSignalObjHdl::set_signal_value(double value)
 
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -641,7 +641,7 @@ int VhpiSignalObjHdl::set_signal_value(std::string &value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }

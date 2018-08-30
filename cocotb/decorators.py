@@ -131,8 +131,9 @@ class RunningCoroutine(object):
             self.retval = e.retval
             self._finished = True
             raise CoroutineComplete(callback=self._finished_cb)
-        except StopIteration:
+        except StopIteration as e:
             self._finished = True
+            self.retval = getattr(e, 'value', None)  # for python >=3.3
             raise CoroutineComplete(callback=self._finished_cb)
         except Exception as e:
             self._finished = True
@@ -171,6 +172,8 @@ class RunningCoroutine(object):
             if the coroutine has finished return false
             otherwise return true"""
         return not self._finished
+
+    __bool__ = __nonzero__
 
 
 class RunningTest(RunningCoroutine):
@@ -288,17 +291,20 @@ class function(object):
     def __call__(self, *args, **kwargs):
 
         @coroutine
-        def execute_function(self, event):
-            event.result = yield cocotb.coroutine(self._func)(*args, **kwargs)
-            event.set()
+        def execute_function(self, fun2ext, ext2fun):
+            fun2ext.result = yield cocotb.coroutine(self._func)(*args, **kwargs)
+            fun2ext.set()
+            ext2fun.wait()
 
-        self._event = threading.Event()
-        self._event.result = None
-        waiter = cocotb.scheduler.queue_function(execute_function(self, self._event))
+        self._event_fun2ext = threading.Event()
+        self._event_fun2ext.result = None
+        self._event_ext2fun = threading.Event()
+        waiter = cocotb.scheduler.queue_function(execute_function(self, self._event_fun2ext, self._event_ext2fun))
         # This blocks the calling external thread until the coroutine finishes
-        self._event.wait()
+        self._event_fun2ext.wait()
         waiter.thread_resume()
-        return self._event.result
+        self._event_ext2fun.set()
+        return self._event_fun2ext.result
 
     def __get__(self, obj, type=None):
         """Permit the decorator to be used on class methods

@@ -413,23 +413,11 @@ class Scheduler(object):
             if _debug:
                 self.log.debug("Scheduled coroutine %s" % (coro.__name__))
 
-        if not depth:
-            # Schedule may have queued up some events so we'll burn through those
-            while self._pending_events:
-                if _debug:
-                    self.log.debug("Scheduling pending event %s" %
-                                   (str(self._pending_events[0])))
-                self._pending_events.pop(0).set()
-
-        while self._pending_triggers:
-            if _debug:
-                self.log.debug("Scheduling pending trigger %s" %
-                               (str(self._pending_triggers[0])))
-            self.react(self._pending_triggers.pop(0), depth=depth + 1)
-
         # We only advance for GPI triggers
         if not depth and isinstance(trigger, GPITrigger):
-            self.advance()
+
+            # Handle all pending events and triggers.
+            self.handle_pending_and_advance()
 
             if _debug:
                 self.log.debug("All coroutines scheduled, handing control back"
@@ -438,6 +426,38 @@ class Scheduler(object):
             if _profiling:
                 _profile.disable()
         return
+
+    def handle_pending_and_advance(self):
+        """Handles pending events and triggers queued up by schedule() that
+        could not be handled immediately without building up the call stack for
+        every trigger/event, then advance the simulation. This must be called
+        before control is handed back to the simulator; i.e. at the end of
+        react() and at the end of the cocotb entry point.
+        """
+
+        # We need to alternate between handling events and triggers:
+        # Event.set() may pend a trigger. The react call will call schedule
+        # again, which may pend new events. These events cannot be handled in
+        # the recursed react call, because this can lead to a stack overflow
+        # in certain cases. By doing them in a loop just before passing control
+        # to the simulator, we ensure that the stack never grows.
+        while self._pending_events or self._pending_triggers:
+            while self._pending_events:
+                if _debug:
+                    self.log.debug("Scheduling pending event %s" %
+                                (str(self._pending_events[0])))
+                self._pending_events.pop(0).set()
+
+            while self._pending_triggers:
+                if _debug:
+                    self.log.debug("Scheduling pending trigger %s" %
+                                (str(self._pending_triggers[0])))
+                self.react(self._pending_triggers.pop(0), 1)
+
+            if self._pending_events:
+                self.log.debug("Recursive react call queued up new events")
+
+        self.advance()
 
     def unschedule(self, coro):
         """Unschedule a coroutine.  Unprime any pending triggers"""
@@ -493,8 +513,12 @@ class Scheduler(object):
 
         for t in self._pending_threads:
             if t.thread == threading.current_thread():
-                t.thread_suspend()
+                # Add the wrapper coroutine of the function before unblocking
+                # the main thread with thread_suspend() to avoid race condition
+                # (if the OS would schedule the main thread before the coro is
+                # pended, simulation time could potentially pass).
                 self._pending_coros.append(coroutine)
+                t.thread_suspend()
                 return t
 
 
@@ -563,6 +587,7 @@ class Scheduler(object):
 
         self.schedule(coroutine)
         self.advance()
+
         return coroutine
 
     def new_test(self, coroutine):
@@ -614,6 +639,29 @@ class Scheduler(object):
             self.unschedule(coroutine)
             return
 
+        # Handle external threads. Regardless of how the coroutine returned,
+        # it may have queued or resumed an external (queued: through yield;
+        # resumed: if coroutine was the function wrapper coroutine and it
+        # returned). That means we always need to wait for all external threads
+        # to finish before continuing.
+        finally:
+
+            # We do not return from here until pending threads have completed, but only
+            # from the main thread, this seems like it could be problematic in cases
+            # where a sim might change what this thread is.
+            if self._main_thread is threading.current_thread():
+
+                for ext in self._pending_threads:
+                    ext.thread_start()
+                    if _debug:
+                        self.log.debug("Blocking from %s on %s" % (threading.current_thread(), ext.thread))
+                    state = ext.thread_wait()
+                    if _debug:
+                        self.log.debug("Back from wait on self %s with newstate %d" % (threading.current_thread(), state))
+                    if state == external_state.EXITED:
+                        self._pending_threads.remove(ext)
+                        self._pending_events.append(ext.event)
+
         # Don't handle the result if we're shutting down
         if self._terminate:
             return
@@ -653,28 +701,6 @@ class Scheduler(object):
                 raise_error(self, msg)
             except Exception as e:
                 self.finish_test(e)
-
-        # We do not return from here until pending threads have completed, but only
-        # from the main thread, this seems like it could be problematic in cases
-        # where a sim might change what this thread is.
-        def unblock_event(ext):
-            @cocotb.coroutine
-            def wrapper():
-                ext.event.set()
-                yield PythonTrigger()
-
-        if self._main_thread is threading.current_thread():
-
-            for ext in self._pending_threads:
-                ext.thread_start()
-                if _debug:
-                    self.log.debug("Blocking from %s on %s" % (threading.current_thread(), ext.thread))
-                state = ext.thread_wait()
-                if _debug:
-                    self.log.debug("Back from wait on self %s with newstate %d" % (threading.current_thread(), state))
-                if state == external_state.EXITED:
-                    self._pending_threads.remove(ext)
-                    self._pending_events.append(ext.event)
 
         # Handle any newly queued coroutines that need to be scheduled
         while self._pending_coros:

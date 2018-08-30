@@ -470,7 +470,7 @@ int VhpiLogicSignalObjHdl::set_signal_value(long value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -515,7 +515,7 @@ int VhpiLogicSignalObjHdl::set_signal_value(std::string &value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -562,7 +562,7 @@ int VhpiSignalObjHdl::set_signal_value(long value)
             return -1;
         }
     }
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -587,7 +587,7 @@ int VhpiSignalObjHdl::set_signal_value(double value)
 
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -641,7 +641,7 @@ int VhpiSignalObjHdl::set_signal_value(std::string &value)
         }
     }
 
-    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiDepositPropagate)) {
+    if (vhpi_put_value(GpiObjHdl::get_handle<vhpiHandleT>(), &m_value, vhpiForcePropagate)) {
         check_vhpi_error();
         return -1;
     }
@@ -813,16 +813,91 @@ int VhpiTimedCbHdl::cleanup_callback(void)
 }
 
 VhpiReadwriteCbHdl::VhpiReadwriteCbHdl(GpiImplInterface *impl) : GpiCbHdl(impl),
-                                                                 VhpiCbHdl(impl)
+                                                                 VhpiCbHdl(impl),
+                                                                 last_known_delta_hdl(NULL)
 {
     cb_data.reason = vhpiCbRepEndOfProcesses;
     cb_data.time = &vhpi_time;
+
+    last_known_delta_cb_data = cb_data;
+    last_known_delta_cb_data.reason = vhpiCbRepLastKnownDeltaCycle;
+}
+
+int VhpiReadwriteCbHdl::arm_callback(void)
+{
+    // Register the normal callback as usual.
+    int ret = VhpiCbHdl::arm_callback();
+    if (ret)
+        return ret;
+
+    // Also register LastKnownDeltaCycle. Aldec won't call EndOfProcesses if no
+    // processes were active, but in that case it WILL call
+    // LastKnownDeltaCycle, at least if setimmediatevalue() is avoided. At the
+    // very least, signal assignments should not be postponed beyond the
+    // current timestep.
+    ret = 0;
+    vhpiStateT cbState;
+
+    /* Do we already have a handle, if so and it is disabled then
+       just re-enable it */
+    if (last_known_delta_hdl != NULL) {
+        cbState = (vhpiStateT)vhpi_get(vhpiStateP, last_known_delta_hdl);
+        if (vhpiDisable == cbState) {
+            if (vhpi_enable_cb(last_known_delta_hdl)) {
+                check_vhpi_error();
+                goto error;
+            }
+        }
+    } else {
+
+        vhpiHandleT new_hdl = vhpi_register_cb(&last_known_delta_cb_data, vhpiReturnCb);
+
+        if (!new_hdl) {
+            check_vhpi_error();
+            LOG_ERROR("VHPI: Unable to register callback a handle for VHPI type %s(%d)",
+                         m_impl->reason_to_string(cb_data.reason), cb_data.reason);
+            goto error;
+        }
+
+        cbState = (vhpiStateT)vhpi_get(vhpiStateP, new_hdl);
+        if (vhpiEnable != cbState) {
+            LOG_ERROR("VHPI ERROR: Registered callback isn't enabled! Got %d\n", cbState);
+            goto error;
+        }
+
+        last_known_delta_hdl = new_hdl;
+    }
+
+    return ret;
+
+error:
+    m_state = GPI_FREE;
+    return -1;
+
+}
+
+int VhpiReadwriteCbHdl::cleanup_callback(void)
+{
+    // Clean up the LastKnownDeltaCycle callback.
+    if (m_state != GPI_FREE && last_known_delta_hdl != NULL) {
+        vhpiStateT cbState = (vhpiStateT)vhpi_get(vhpiStateP, last_known_delta_hdl);
+        if (vhpiEnable == cbState) {
+            int ret = vhpi_disable_cb(get_handle<vhpiHandleT>());
+            if (ret) {
+                check_vhpi_error();
+            }
+            m_state = GPI_FREE;
+        }
+    }
+
+    // Clean up the normal callback.
+    return VhpiCbHdl::cleanup_callback();
 }
 
 VhpiReadOnlyCbHdl::VhpiReadOnlyCbHdl(GpiImplInterface *impl) : GpiCbHdl(impl),
                                                                VhpiCbHdl(impl)
 {
-    cb_data.reason = vhpiCbRepLastKnownDeltaCycle;
+    cb_data.reason = vhpiCbRepEndOfTimeStep;
     cb_data.time = &vhpi_time;
 }
 

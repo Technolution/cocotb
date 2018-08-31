@@ -66,6 +66,66 @@ int context = 0;
  * Stores the thread state for cocotb in static variable gtstate
  */
 
+#if defined (_POSIX_) || defined (__USE_POSIX)
+  extern char **environ;
+  #define envp environ
+#elif defined(_WIN32)
+  _CRTIMP extern char **_environ;
+  #define envp _environ
+#endif
+
+const char* used_environment_variables[] = {
+"HOME", "PATH", "LD_LIBRARY_PATH", "TESTCASE", "TOPLEVEL", "ARCH", "SIM_ROOT", "MODULE", "COCOTB_ATTACH", "GPI_EXTRA", "VIRTUAL_ENV", "SIM_ROOT", "MEMCHECK", "VERSION", "COCOTB_LOG_LEVEL", "COCOTB_ANSI_OUTPUT", "RESULT_TESTPACKAGE", "RESULT_TESTSUITE", "RANDOM_SEED", "MEMCHECK"
+};
+
+char* my_env[32];
+char my_env_string[8192];
+
+void restore_environment(void) {
+    int i;
+    char* my_env_string_ptr = my_env_string;
+    int remaining_chars = 0;
+    char** my_env_ptr = my_env;
+    
+    int used_environment_variables_count = sizeof(used_environment_variables)/sizeof(used_environment_variables[0]);
+    for (i=0; i<used_environment_variables_count; i++) {
+        // find all the environment variables
+        char* value;
+        value = getenv(used_environment_variables[i]);
+        remaining_chars = my_env_string + sizeof(my_env_string) - my_env_string_ptr;
+        
+        if (value != NULL) {
+            //printf("Adding environment variable %s\n", used_environment_variables[i]);
+            if (remaining_chars <= 0) {
+                LOG_ERROR("No more room to store environment variable");
+                break;
+            }
+            
+            if ((int)(my_env_ptr - my_env) >= (sizeof(my_env) / sizeof(my_env[0]))) {
+                LOG_ERROR("No more space to add another environment variable");
+                break;
+            }
+            
+            int printed = snprintf(my_env_string_ptr, remaining_chars, "%s=%s", used_environment_variables[i], value);
+            if (printed > (remaining_chars - 1)) {
+                LOG_ERROR("Insufficient room to store all environment variables");
+                break;
+            }
+            LOG_DEBUG("Added environment variable %s", my_env_string_ptr);
+            
+            // store the pointer in the list
+            *my_env_ptr = my_env_string_ptr;
+            my_env_ptr++;
+            *my_env_ptr = NULL;
+            my_env_string_ptr += (printed + 1);
+        }
+    }
+    LOG_DEBUG("Used environment variables %i", (int)(my_env_ptr - my_env) - 1);
+    
+    // overwrite the current environment;
+    envp = my_env;
+}
+ 
 void embed_init_python(void)
 {
     FENTER;
@@ -85,6 +145,11 @@ void embed_init_python(void)
         fprintf(stderr, "Failed to find python lib\n");
     }
 
+    printf("Environment pointer %p\n", envp);
+    if (envp == NULL) {
+        restore_environment();
+    }
+    
     to_python();
 
     // reset Program Name (i.e. argv[0]) if we are in a virtual environment

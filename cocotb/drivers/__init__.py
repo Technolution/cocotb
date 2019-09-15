@@ -29,23 +29,21 @@
 
 """Set of common driver base classes."""
 
-import logging
 from collections import deque
 
 import cocotb
 from cocotb.decorators import coroutine
-from cocotb.triggers import (Event, RisingEdge, ReadOnly, Timer, NextTimeStep,
+from cocotb.triggers import (Event, RisingEdge, ReadOnly, NextTimeStep,
                              Edge)
 from cocotb.bus import Bus
 from cocotb.log import SimLog
-from cocotb.result import ReturnValue
 from cocotb.utils import reject_remaining_kwargs
 
 
 class BitDriver(object):
     """Drives a signal onto a single bit.
 
-    Useful for exercising ready / valid.
+    Useful for exercising ready/valid flags.
     """
     def __init__(self, signal, clk, generator=None):
         self._signal = signal
@@ -56,7 +54,15 @@ class BitDriver(object):
         """Start generating data.
 
         Args:
-            generator (optional): Generator yielding data.
+            generator (generator, optional): Generator yielding data.
+                The generator should yield tuples ``(on, off)``
+                with the number of cycles to be on, 
+                followed by the number of cycles to be off.
+                Typically the generator should go on forever.
+
+                Example::
+
+                    bit_driver.start((1, i % 5) for i in itertools.count())
         """
         self._cr = cocotb.fork(self._cr_twiddler(generator=generator))
 
@@ -77,10 +83,10 @@ class BitDriver(object):
         while True:
             on, off = next(self._generator)
             self._signal <= 1
-            for i in range(on):
+            for _ in range(on):
                 yield edge
             self._signal <= 0
-            for i in range(off):
+            for _ in range(off):
                 yield edge
 
 
@@ -211,7 +217,7 @@ class BusDriver(Driver):
 
         Args:
             entity (SimHandle): A handle to the simulator entity.
-            name (str or None): Name of this bus. ``None`` for nameless bus, e.g.
+            name (str or None): Name of this bus. ``None`` for a nameless bus, e.g.
                 bus-signals in an interface or a modport.
                 (untested on struct/record, but could work here as well).
             clock (SimHandle): A handle to the clock associated with this bus.
@@ -281,15 +287,15 @@ class BusDriver(Driver):
 
 
 class ValidatedBusDriver(BusDriver):
-    """Same as a BusDriver except we support an optional generator to control
-    which cycles are valid.
+    """Same as a :class:`BusDriver` except we support an optional generator
+    to control which cycles are valid.
 
     Args:
         entity (SimHandle): A handle to the simulator entity.
         name (str): Name of this bus.
         clock (SimHandle): A handle to the clock associated with this bus.
-        valid_generator (generator, optional): a generator that yields tuples  of
-            (valid, invalid) cycles to insert.
+        valid_generator (generator, optional): a generator that yields tuples of
+            ``(valid, invalid)`` cycles to insert.
     """
 
     def __init__(self, entity, name, clock, **kwargs):
@@ -298,10 +304,11 @@ class ValidatedBusDriver(BusDriver):
         self.set_valid_generator(valid_generator=valid_generator)
 
     def _next_valids(self):
-        """Optionally insert invalid cycles every N cycles
-        Generator should return a tuple with the number of cycles to be
+        """Optionally insert invalid cycles every N cycles.
+
+        The generator should yield tuples with the number of cycles to be
         on followed by the number of cycles to be off.
-        The 'on' cycles should be non-zero, we skip invalid generator entries.
+        The ``on`` cycles should be non-zero, we skip invalid generator entries.
         """
         self.on = False
 
@@ -334,7 +341,8 @@ def polled_socket_attachment(driver, sock):
     """Non-blocking socket attachment that queues any payload received from the
     socket to be queued for sending into the driver.
     """
-    import socket, errno
+    import socket
+    import errno
     sock.setblocking(False)
     driver.log.info("Listening for data from %s" % repr(sock))
     while True:

@@ -29,21 +29,25 @@ from __future__ import print_function
 import sys
 import time
 import logging
-import traceback
-import pdb
 import functools
 import threading
 import inspect
 import textwrap
-
-from io import StringIO, BytesIO
+import os
 
 import cocotb
 from cocotb.log import SimLog
-from cocotb.result import (TestComplete, TestError, TestFailure, TestSuccess,
-                           ReturnValue, raise_error, ExternalException)
-from cocotb.utils import get_sim_time, with_metaclass, exec_
+from cocotb.result import ReturnValue, raise_error
+from cocotb.utils import get_sim_time, lazy_property
 from cocotb import outcomes
+from cocotb import _py_compat
+
+# Sadly the Python standard logging module is very slow so it's better not to
+# make any calls by testing a boolean flag first
+if "COCOTB_SCHEDULER_DEBUG" in os.environ:
+    _debug = True
+else:
+    _debug = False
 
 
 def public(f):
@@ -87,9 +91,6 @@ class RunningCoroutine(object):
     def __init__(self, inst, parent):
         if hasattr(inst, "__name__"):
             self.__name__ = "%s" % inst.__name__
-            self.log = SimLog("cocotb.coroutine.%s" % self.__name__, id(self))
-        else:
-            self.log = SimLog("cocotb.coroutine.fail")
 
         if sys.version_info[:2] >= (3, 5) and inspect.iscoroutine(inst):
             self._natively_awaitable = True
@@ -106,9 +107,19 @@ class RunningCoroutine(object):
         self._outcome = None
 
         if not hasattr(self._coro, "send"):
-            self.log.error("%s isn't a valid coroutine! Did you use the yield "
-                           "keyword?" % self.funcname)
-            raise CoroutineComplete()
+            raise TypeError(
+                "%s isn't a valid coroutine! Did you use the yield "
+                "keyword?" % self.funcname
+            )
+
+    @lazy_property
+    def log(self):
+        # Creating a logger is expensive, only do it if we actually plan to
+        # log anything
+        if hasattr(self, "__name__"):
+            return SimLog("cocotb.coroutine.%s" % self.__name__, id(self))
+        else:
+            return SimLog("cocotb.coroutine.fail")
 
     @property
     def retval(self):
@@ -147,7 +158,7 @@ class RunningCoroutine(object):
             self._outcome = outcomes.Value(retval)
             raise CoroutineComplete()
         except BaseException as e:
-            self._outcome = outcomes.Error(e)
+            self._outcome = outcomes.Error(e).without_frames(['_advance', 'send'])
             raise CoroutineComplete()
 
     def send(self, value):
@@ -165,7 +176,8 @@ class RunningCoroutine(object):
             # already finished, nothing to kill
             return
 
-        self.log.debug("kill() called on coroutine")
+        if _debug:
+            self.log.debug("kill() called on coroutine")
         # todo: probably better to throw an exception for anyone waiting on the coroutine
         self._outcome = outcomes.Value(None)
         cocotb.scheduler.unschedule(self)
@@ -185,7 +197,7 @@ class RunningCoroutine(object):
 
     # Once 2.7 is dropped, this can be run unconditionally
     if sys.version_info >= (3, 3):
-        exec_(textwrap.dedent("""
+        _py_compat.exec_(textwrap.dedent("""
         def __await__(self):
             # It's tempting to use `return (yield from self._coro)` here,
             # which bypasses the scheduler. Unfortunately, this means that
@@ -240,27 +252,37 @@ class RunningTest(RunningCoroutine):
             self.start_time = time.time()
             self.start_sim_time = get_sim_time('ns')
             self.started = True
-        try:
-            self.log.debug("Sending {}".format(outcome))
-            return outcome.send(self._coro)
-        except TestComplete as e:
-            if isinstance(e, TestFailure):
-                self.log.warning(str(e))
-            else:
-                self.log.info(str(e))
-
-            buff = StringIO()
-            for message in self.error_messages:
-                print(message, file=buff)
-            e.stderr.write(buff.getvalue())
-            raise
-        except StopIteration:
-            raise TestSuccess()
-        except Exception as e:
-            raise raise_error(self, "Send raised exception:")
+        return super(RunningTest, self)._advance(outcome)
 
     def _handle_error_message(self, msg):
         self.error_messages.append(msg)
+
+    def _force_outcome(self, outcome):
+        """
+        This method exists as a workaround for preserving tracebacks on
+        python 2, and is called in unschedule. Once Python 2 is dropped, this
+        should be inlined into `abort` below, and the call in `unschedule`
+        replaced with `abort(outcome.error)`.
+        """
+        assert self._outcome is None
+        if _debug:
+            self.log.debug("outcome forced to {}".format(outcome))
+        self._outcome = outcome
+        cocotb.scheduler.unschedule(self)
+
+    # like RunningCoroutine.kill(), but with a way to inject a failure
+    def abort(self, exc):
+        """
+        Force this test to end early, without executing any cleanup.
+
+        This happens when a background task fails, and is consistent with
+        how the behavior has always been. In future, we may want to behave
+        more gracefully to allow the test body to clean up.
+
+        `exc` is the exception that the test should report as its reason for
+        aborting.
+        """
+        return self._force_outcome(outcomes.Error(exc))
 
 
 class coroutine(object):
@@ -275,25 +297,15 @@ class coroutine(object):
 
     def __init__(self, func):
         self._func = func
-        self.log = SimLog("cocotb.coroutine.%s" % self._func.__name__, id(self))
         self.__name__ = self._func.__name__
         functools.update_wrapper(self, func)
 
+    @lazy_property
+    def log(self):
+        return SimLog("cocotb.coroutine.%s" % self._func.__name__, id(self))
+
     def __call__(self, *args, **kwargs):
-        try:
-            return RunningCoroutine(self._func(*args, **kwargs), self)
-        except Exception as e:
-            traceback.print_exc()
-            result = TestError(str(e))
-            if sys.version_info[0] >= 3:
-                buff = StringIO()
-                traceback.print_exc(file=buff)
-            else:
-                buff_bytes = BytesIO()
-                traceback.print_exc(file=buff_bytes)
-                buff = StringIO(buff_bytes.getvalue().decode("UTF-8"))
-            result.stderr.write(buff.getvalue())
-            raise result
+        return RunningCoroutine(self._func(*args, **kwargs), self)
 
     def __get__(self, obj, type=None):
         """Permit the decorator to be used on class methods
@@ -316,7 +328,10 @@ class function(object):
     """
     def __init__(self, func):
         self._func = func
-        self.log = SimLog("cocotb.function.%s" % self._func.__name__, id(self))
+
+    @lazy_property
+    def log(self):
+        return SimLog("cocotb.function.%s" % self._func.__name__, id(self))
 
     def __call__(self, *args, **kwargs):
 
@@ -394,7 +409,7 @@ class _decorator_helper(type):
 
 
 @public
-class hook(with_metaclass(_decorator_helper, coroutine)):
+class hook(_py_compat.with_metaclass(_decorator_helper, coroutine)):
     """Decorator to mark a function as a hook for cocotb.
 
     Used as ``@cocotb.hook()``.
@@ -414,7 +429,7 @@ class hook(with_metaclass(_decorator_helper, coroutine)):
 
 
 @public
-class test(with_metaclass(_decorator_helper, coroutine)):
+class test(_py_compat.with_metaclass(_decorator_helper, coroutine)):
     """Decorator to mark a function as a test.
 
     All tests are coroutines.  The test decorator provides
@@ -450,8 +465,4 @@ class test(with_metaclass(_decorator_helper, coroutine)):
         self.name = self._func.__name__
 
     def __call__(self, *args, **kwargs):
-        try:
-            return RunningTest(self._func(*args, **kwargs), self)
-        except Exception as e:
-            raise raise_error(self, "Test raised exception:")
-
+        return RunningTest(self._func(*args, **kwargs), self)

@@ -794,12 +794,15 @@ int VhpiStartupCbHdl::run_callback() {
     
     sim_info.product = const_cast<char*>(static_cast<const char*>(vhpi_get_str(vhpiNameP, tool)));
     sim_info.version = const_cast<char*>(static_cast<const char*>(vhpi_get_str(vhpiToolVersionP, tool)));
+    sim_info.argc = 0;
+    sim_info.argv = NULL;
 
     if (tool) {
         tool_argc = vhpi_get(vhpiArgcP, tool);
         tool_argv = (char **)malloc(sizeof(char *) * tool_argc);
         assert(tool_argv);
 
+#if 0
         argv_iter = vhpi_iterator(vhpiArgvs, tool);
         if (argv_iter) {
             while ((argv_hdl = vhpi_scan(argv_iter))) {
@@ -810,6 +813,11 @@ int VhpiStartupCbHdl::run_callback() {
         }
         sim_info.argc = tool_argc;
         sim_info.argv = tool_argv;
+#else
+        (void)argv_iter;
+        (void)argv_hdl;
+        (void)i;
+#endif
 
         vhpi_release_handle(tool);
     }

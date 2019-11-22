@@ -585,14 +585,19 @@ class Scheduler(object):
             except BaseException as e:
                 _outcome = outcomes.Error(e)
             event.outcome = _outcome
+            # We need to make sure that thread_resume has been called for the
+            # calling thread so that the scheduler will return the outcome to
+            # the calling thread before advancing the sim
+            t.thread_resume()
             event.set()
 
         event = threading.Event()
-        t.thread_suspend()
         self._pending_coros.append(wrapper())
+        # The main thread blocks in thread_wait and resumes on thread_suspend
+        # so we need to make sure the coroutine is queued before that
+        t.thread_suspend()
         # This blocks the calling external thread until the coroutine finishes
         event.wait()
-        t.thread_resume()
         return event.outcome.get()
 
     def run_in_executor(self, func, *args, **kwargs):
@@ -752,20 +757,20 @@ class Scheduler(object):
         # chaining
         if coro_completed:
             self.unschedule(coroutine)
-            return
 
         # Don't handle the result if we're shutting down
         if self._terminate:
             return
 
-        try:
-            result = self._trigger_from_any(result)
-        except TypeError as exc:
-            # restart this coroutine with an exception object telling it that
-            # it wasn't allowed to yield that
-            result = NullTrigger(outcome=outcomes.Error(exc))
+        if not coro_completed:
+            try:
+                result = self._trigger_from_any(result)
+            except TypeError as exc:
+                # restart this coroutine with an exception object telling it that
+                # it wasn't allowed to yield that
+                result = NullTrigger(outcome=outcomes.Error(exc))
 
-        self._coroutine_yielded(coroutine, result)
+            self._coroutine_yielded(coroutine, result)
 
         # We do not return from here until pending threads have completed, but only
         # from the main thread, this seems like it could be problematic in cases

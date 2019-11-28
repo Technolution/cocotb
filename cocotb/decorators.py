@@ -328,21 +328,25 @@ class function(object):
     def __call__(self, *args, **kwargs):
 
         @coroutine
-        def execute_function(self, event):
+        def execute_function(self, f2e_event, e2f_event):
             coro = cocotb.coroutine(self._func)(*args, **kwargs)
             try:
                 _outcome = outcomes.Value((yield coro))
             except BaseException as e:
                 _outcome = outcomes.Error(e)
-            event.outcome = _outcome
-            event.set()
+            f2e_event.outcome = _outcome
+            f2e_event.set()
+            e2f_event.wait()
 
-        event = threading.Event()
-        waiter = cocotb.scheduler.queue_function(execute_function(self, event))
+        f2e_event = threading.Event()
+        f2e_event.outcome = None
+        e2f_event = threading.Event()
+        waiter = cocotb.scheduler.queue_function(execute_function(self, f2e_event, e2f_event))
         # This blocks the calling external thread until the coroutine finishes
-        event.wait()
+        f2e_event.wait()
         waiter.thread_resume()
-        return event.outcome.get()
+        e2f_event.set()
+        return f2e_event.outcome.get()
 
     def __get__(self, obj, type=None):
         """Permit the decorator to be used on class methods

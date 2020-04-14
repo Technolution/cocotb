@@ -267,6 +267,7 @@ class Scheduler(object):
                 handle, value = self._writes.popitem()
                 handle.setimmediatevalue(value)
             self._writes_pending.clear()
+            # Workaround for Aldec Riviera-PRO: schedule 'delta' event after 1ps. 
             yield Timer(1)
 
     def _check_termination(self):

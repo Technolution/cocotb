@@ -840,6 +840,7 @@ int VhpiStartupCbHdl::run_callback() {
     int tool_argc = 0;
     int i = 0;
 
+#if 0
     tool = vhpi_handle(vhpiTool, NULL);
     if (tool) {
         tool_argc = static_cast<int>(vhpi_get(vhpiArgcP, tool));
@@ -857,6 +858,7 @@ int VhpiStartupCbHdl::run_callback() {
 
         vhpi_release_handle(tool);
     }
+#endif
 
     gpi_embed_init(tool_argc, tool_argv);
     delete [] tool_argv;

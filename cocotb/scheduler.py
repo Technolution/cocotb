@@ -264,6 +264,9 @@ class Scheduler:
                 handle, (func, args) = self._write_calls.popitem()
                 func(*args)
             self._writes_pending.clear()
+            
+            # TL20200826: Aldec work-around: Schedule 1ps 'delta-cycle' delay after signal update.
+            await Timer(1)
 
     def _check_termination(self):
         """

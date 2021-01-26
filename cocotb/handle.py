@@ -712,7 +712,7 @@ class ModifiableObject(NonConstantObject):
 
     def _check_for_set_action(self, value):
         if not isinstance(value, _SetAction):
-            return value, 0  # GPI_DEPOSIT
+            return value, 1  # GPI_FORCE
         return value._as_gpi_args_for(self)
 
     @NonConstantObject.value.getter
